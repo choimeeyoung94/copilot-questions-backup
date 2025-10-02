@@ -1,0 +1,111 @@
+name: Backup Copilot Chat Issues
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 매일 03:00 UTC
+  workflow_dispatch:  # 수동 실행 가능
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Backup issues to markdown files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Get all open issues with copilot-chat label
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'copilot-chat',
+              state: 'open'
+            });
+            
+            console.log(`Found ${issues.data.length} open issues with copilot-chat label`);
+            
+            for (const issue of issues.data) {
+              const createdAt = new Date(issue.created_at);
+              const year = createdAt.getFullYear();
+              const month = String(createdAt.getMonth() + 1).padStart(2, '0');
+              const day = String(createdAt.getDate()).padStart(2, '0');
+              
+              // Create directory structure
+              const dirPath = path.join('backups', String(year), month, day);
+              fs.mkdirSync(dirPath, { recursive: true });
+              
+              // Create filename from title
+              const titleSlug = issue.title
+                .toLowerCase()
+                .replace(/[^a-z0-9가-힣\s-]/g, '')
+                .replace(/\s+/g, '-')
+                .substring(0, 50);
+              
+              const filename = `${year}-${month}-${day}-${titleSlug}-#${issue.number}.md`;
+              const filePath = path.join(dirPath, filename);
+              
+              // Create markdown content with YAML front matter
+              const content = [
+                '---',
+                `title: "${issue.title.replace(/"/g, '\\"')}"`,
+                `issue_number: ${issue.number}`,
+                `created_at: ${issue.created_at}`,
+                `updated_at: ${issue.updated_at}`,
+                `author: ${issue.user.login}`,
+                `labels: ${issue.labels.map(l => l.name).join(', ')}`,
+                `url: ${issue.html_url}`,
+                '---',
+                '',
+                `# ${issue.title}`,
+                '',
+                issue.body || '',
+                ''
+              ].join('\n');
+              
+              fs.writeFileSync(filePath, content, 'utf8');
+              console.log(`Backed up issue #${issue.number} to ${filePath}`);
+              
+              // Add archived label
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['archived']
+              });
+              
+              // Close the issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+              
+              console.log(`Closed issue #${issue.number}`);
+            }
+            
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add backups/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Backup copilot-chat issues"
+            git push
+          fi
