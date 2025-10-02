@@ -1,0 +1,38 @@
+name: Copilot Chat Backup
+description: Copilot Chat 대화를 백업합니다
+title: "copilot: "
+labels: ["copilot-chat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Copilot Chat에서 중요한 Q/A를 아래에 붙여넣어 주세요.
+        
+  - type: textarea
+    id: question
+    attributes:
+      label: 질문 (Question)
+      description: Copilot에게 물어본 질문을 입력하세요
+      placeholder: |
+        예시: 템플릿 선택이 안뜨는데?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: answer
+    attributes:
+      label: 답변 (Answer)
+      description: Copilot의 답변을 입력하세요
+      placeholder: |
+        예시: 지금 화면은 "빈 이슈 작성" 페이지(/issues/new)라서 템플릿 선택이 안 보이는 게 정상이에요...
+    validations:
+      required: true
+      
+  - type: textarea
+    id: additional
+    attributes:
+      label: 추가 정보 (Additional Information)
+      description: 필요시 스크린샷, 코드 등 추가 정보를 입력하세요
+      placeholder: 스크린샷, 코드 스니펫 등
+    validations:
+      required: false
