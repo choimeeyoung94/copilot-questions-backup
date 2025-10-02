@@ -25,7 +25,3 @@ backups/
 - 처리된 이슈에는 `archived` 라벨이 추가되고 자동으로 닫힙니다.
 - 저장소 권한은 Actions가 푸시할 수 있도록 `contents: write`, `issues: write`로 설정되어 있습니다.
 
-
-
-
-
