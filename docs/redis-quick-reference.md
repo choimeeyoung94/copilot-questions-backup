@@ -174,12 +174,25 @@ public RedisMessageListenerContainer container(RedisConnectionFactory factory) {
 ```java
 public <T> T executeWithLock(String lockKey, Supplier<T> task) {
     String requestId = UUID.randomUUID().toString();
+    long startTime = System.currentTimeMillis();
+    int retryCount = 0;
+    
     try {
-        // 락 획득
+        // 락 획득 (exponential backoff 적용)
         while (!redisTemplate.opsForValue().setIfAbsent(lockKey, requestId, 10, TimeUnit.SECONDS)) {
-            Thread.sleep(100);
+            if (System.currentTimeMillis() - startTime > 5000) {
+                throw new RuntimeException("Failed to acquire lock within timeout");
+            }
+            
+            // Exponential backoff with jitter
+            int backoff = Math.min(100 * (1 << retryCount), 1000);
+            Thread.sleep(backoff + new Random().nextInt(50));
+            retryCount++;
         }
         return task.get();
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException("Interrupted while acquiring lock", e);
     } finally {
         // 락 해제
         unlock(lockKey, requestId);
@@ -247,11 +260,25 @@ if (size > 50) {
 
 ### 5. 캐시 무효화
 ```java
-// 패턴 기반 삭제
-Set<String> keys = redisTemplate.keys("mail_list:" + userId + ":*");
-if (keys != null && !keys.isEmpty()) {
+// 패턴 기반 삭제 (SCAN 사용 권장 - 프로덕션 환경에서 안전)
+Set<String> keys = new HashSet<>();
+ScanOptions options = ScanOptions.scanOptions()
+    .match("mail_list:" + userId + ":*")
+    .count(100)
+    .build();
+
+try (Cursor<String> cursor = redisTemplate.scan(options)) {
+    while (cursor.hasNext()) {
+        keys.add(cursor.next());
+    }
+}
+
+if (!keys.isEmpty()) {
     redisTemplate.delete(keys);
 }
+
+// 또는 소규모 환경에서만: redisTemplate.keys("mail_list:" + userId + ":*");
+// 주의: KEYS 명령어는 프로덕션에서 사용 시 Redis를 블로킹할 수 있음
 ```
 
 ## 주의사항 체크리스트
@@ -336,7 +363,8 @@ public class RedisConfig {
 | `HGETALL key` | Hash 전체 조회 | `HGETALL user:1` |
 | `EXPIRE key seconds` | TTL 설정 | `EXPIRE session:123 3600` |
 | `DEL key` | 키 삭제 | `DEL user:1` |
-| `KEYS pattern` | 패턴으로 키 검색 | `KEYS user:*` |
+| `SCAN cursor MATCH pattern` | 패턴으로 키 검색 (안전) | `SCAN 0 MATCH user:*` |
+| `KEYS pattern` | 패턴으로 키 검색 (비권장) | `KEYS user:*` (프로덕션 비권장) |
 
 ## 더 자세한 내용
 

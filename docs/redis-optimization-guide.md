@@ -847,8 +847,27 @@ public class CacheInvalidationService {
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
     
-    // 패턴 기반 키 삭제
+    // 패턴 기반 키 삭제 (SCAN 사용 - 프로덕션 안전)
     public void deleteByPattern(String pattern) {
+        Set<String> keys = new HashSet<>();
+        ScanOptions options = ScanOptions.scanOptions()
+            .match(pattern)
+            .count(100)
+            .build();
+        
+        try (Cursor<String> cursor = redisTemplate.scan(options)) {
+            while (cursor.hasNext()) {
+                keys.add(cursor.next());
+            }
+        }
+        
+        if (!keys.isEmpty()) {
+            redisTemplate.delete(keys);
+        }
+    }
+    
+    // 소규모 환경에서만 사용 (주의: 프로덕션에서는 Redis 블로킹 가능)
+    public void deleteByPatternUnsafe(String pattern) {
         Set<String> keys = redisTemplate.keys(pattern);
         if (keys != null && !keys.isEmpty()) {
             redisTemplate.delete(keys);
@@ -995,21 +1014,27 @@ public class RedisLockManager {
     }
     
     /**
-     * 락을 획득하고 작업 실행
+     * 락을 획득하고 작업 실행 (exponential backoff 적용)
      */
     public <T> T executeWithLock(String lockKey, 
                                   int expireTime, 
                                   Supplier<T> task) {
         String requestId = UUID.randomUUID().toString();
+        long startTime = System.currentTimeMillis();
+        int retryCount = 0;
         
         try {
-            // 락 획득 시도 (최대 5초 대기)
-            long startTime = System.currentTimeMillis();
+            // 락 획득 시도 (최대 5초 대기, exponential backoff)
             while (!tryLock(lockKey, requestId, expireTime)) {
                 if (System.currentTimeMillis() - startTime > 5000) {
                     throw new RuntimeException("Failed to acquire lock: " + lockKey);
                 }
-                Thread.sleep(100);
+                
+                // Exponential backoff with jitter (지수 백오프 + 지터)
+                int backoff = Math.min(100 * (1 << retryCount), 1000);
+                int jitter = new Random().nextInt(50);
+                Thread.sleep(backoff + jitter);
+                retryCount++;
             }
             
             // 작업 실행
@@ -1232,7 +1257,26 @@ public void addToList(String key, Object value, int maxSize) {
 
 ### 5.3 성능 최적화
 
-**1. Pipeline 사용:**
+**1. SCAN 대신 KEYS 사용 금지 (프로덕션):**
+```java
+// ❌ 잘못된 방법 - KEYS는 Redis를 블로킹함
+Set<String> keys = redisTemplate.keys("user:*");
+
+// ✅ 올바른 방법 - SCAN은 비블로킹
+Set<String> keys = new HashSet<>();
+ScanOptions options = ScanOptions.scanOptions()
+    .match("user:*")
+    .count(100)
+    .build();
+
+try (Cursor<String> cursor = redisTemplate.scan(options)) {
+    while (cursor.hasNext()) {
+        keys.add(cursor.next());
+    }
+}
+```
+
+**2. Pipeline 사용 (일괄 처리):**
 ```java
 public void batchOperations(List<String> keys, List<Object> values) {
     redisTemplate.executePipelined(new SessionCallback<Object>() {
@@ -1247,7 +1291,7 @@ public void batchOperations(List<String> keys, List<Object> values) {
 }
 ```
 
-**2. Lua Script 사용 (원자성 보장):**
+**3. Lua Script 사용 (원자성 보장):**
 ```java
 public Long incrementIfExists(String key, long delta) {
     String script = 
@@ -1264,7 +1308,7 @@ public Long incrementIfExists(String key, long delta) {
 }
 ```
 
-**3. 연결 풀 설정:**
+**4. 연결 풀 설정:**
 ```yaml
 spring:
   redis:
